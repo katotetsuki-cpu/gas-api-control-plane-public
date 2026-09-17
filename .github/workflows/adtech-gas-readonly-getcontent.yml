@@ -11,35 +11,46 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      GOOGLE_ACCESS_TOKEN: ${{ secrets.GOOGLE_ACCESS_TOKEN }}
+      GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
       ADTECH_GAS_SCRIPT_ID: ${{ secrets.ADTECH_GAS_SCRIPT_ID }}
     steps:
-      - name: Validate ephemeral credentials
+      - name: Validate credential presence
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${GOOGLE_ACCESS_TOKEN:-}" || { echo 'MISSING_GOOGLE_ACCESS_TOKEN'; exit 1; }
+          test -n "${GOOGLE_REFRESH_TOKEN:-}" || { echo 'MISSING_GOOGLE_REFRESH_TOKEN'; exit 1; }
           test -n "${ADTECH_GAS_SCRIPT_ID:-}" || { echo 'MISSING_ADTECH_GAS_SCRIPT_ID'; exit 1; }
-          echo "::add-mask::${GOOGLE_ACCESS_TOKEN}"
+          echo "::add-mask::${GOOGLE_REFRESH_TOKEN}"
           echo "::add-mask::${ADTECH_GAS_SCRIPT_ID}"
           echo 'CREDENTIAL_PRESENCE_PASS'
 
-      - name: Read Production Apps Script content
+      - name: Read Production Apps Script source with clasp
         shell: bash
         run: |
           set -euo pipefail
-          http_code="$(curl --silent --show-error \
-            --output content.json \
-            --write-out '%{http_code}' \
-            --header "Authorization: Bearer ${GOOGLE_ACCESS_TOKEN}" \
-            "https://script.googleapis.com/v1/projects/${ADTECH_GAS_SCRIPT_ID}/content")"
-          printf '%s' "$http_code" > http_code.txt
-          if [ "$http_code" != '200' ]; then
-            echo "GET_CONTENT_HTTP_${http_code}"
-            rm -f content.json
+          mkdir -p live
+          python3 - <<'PY'
+          import json, os, pathlib
+          home = pathlib.Path.home()
+          cred = {
+              'refresh_token': os.environ['GOOGLE_REFRESH_TOKEN'],
+              'token_type': 'Bearer'
+          }
+          p = home / '.clasprc.json'
+          p.write_text(json.dumps(cred), encoding='utf-8')
+          p.chmod(0o600)
+          cfg = {'scriptId': os.environ['ADTECH_GAS_SCRIPT_ID'], 'rootDir': '.'}
+          pathlib.Path('live/.clasp.json').write_text(json.dumps(cfg), encoding='utf-8')
+          PY
+          (
+            cd live
+            npx -y @google/clasp@3.4.0 pull > /tmp/clasp-pull.log 2>&1
+          ) || {
+            echo 'CLASP_PULL_FAILED'
+            tail -n 20 /tmp/clasp-pull.log | sed -E 's/[A-Za-z0-9_\/-]{20,}/[REDACTED]/g'
             exit 1
-          fi
-          echo 'GET_CONTENT_HTTP_200'
+          }
+          echo 'CLASP_PULL_PASS'
 
       - name: Build source-free receipt
         shell: bash
@@ -48,27 +59,27 @@ jobs:
           python3 - <<'PY'
           import hashlib, json
           from pathlib import Path
-          data = json.loads(Path('content.json').read_text(encoding='utf-8'))
-          files = data.get('files') or []
-          manifest_present = any(f.get('name') == 'appsscript' and f.get('type') == 'JSON' for f in files)
-          normalized = []
-          total_bytes = 0
-          for f in files:
-              src = f.get('source', '')
-              total_bytes += len(src.encode('utf-8'))
-              normalized.append({
-                  'name_sha256': hashlib.sha256(str(f.get('name','')).encode()).hexdigest(),
-                  'type': f.get('type',''),
-                  'source_sha256': hashlib.sha256(src.encode()).hexdigest(),
-                  'source_bytes': len(src.encode('utf-8')),
+          root = Path('live')
+          allowed = []
+          total = 0
+          for p in sorted(root.rglob('*')):
+              if not p.is_file() or p.name == '.clasp.json':
+                  continue
+              rel = p.relative_to(root).as_posix()
+              data = p.read_bytes()
+              total += len(data)
+              allowed.append({
+                  'path_sha256': hashlib.sha256(rel.encode()).hexdigest(),
+                  'source_sha256': hashlib.sha256(data).hexdigest(),
+                  'source_bytes': len(data),
               })
-          normalized.sort(key=lambda x: (x['name_sha256'], x['type']))
-          aggregate = hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(',',':')).encode()).hexdigest()
+          manifest_present = any(p.name == 'appsscript.json' for p in root.rglob('appsscript.json'))
+          aggregate = hashlib.sha256(json.dumps(allowed, sort_keys=True, separators=(',',':')).encode()).hexdigest()
           receipt = {
-              'state': 'PASS_READONLY_GETCONTENT' if manifest_present else 'FAIL_MANIFEST_MISSING',
-              'file_count': len(files),
+              'state': 'PASS_READONLY_CLASP_PULL' if manifest_present else 'FAIL_MANIFEST_MISSING',
+              'file_count': len(allowed),
               'manifest_present': manifest_present,
-              'total_source_bytes': total_bytes,
+              'total_source_bytes': total,
               'aggregate_fingerprint': aggregate,
               'source_exposed': False,
               'mutation_count': 0,
@@ -79,40 +90,39 @@ jobs:
               raise SystemExit(1)
           PY
 
-      - name: Encrypt source payload for AI-side inspection
+      - name: Package and encrypt source payload for AI-side inspection
         shell: bash
         run: |
           set -euo pipefail
+          tar --exclude='.clasp.json' -C live -czf live-source.tgz .
           cat > recipient-cert.pem <<'CERT'
 -----BEGIN CERTIFICATE-----
-MIIEJzCCAo+gAwIBAgIUHFz0KTGjGpNNcbnUj8lNiEMyKvowDQYJKoZIhvcNAQEL
+MIID5zCCAk+gAwIBAgIUPKsR666kicg0+veJ/tR8EFjNjNcwDQYJKoZIhvcNAQEL
 BQAwIzEhMB8GA1UEAwwYYWR0ZWNoLWdhcy1jb250cm9sLXBsYW5lMB4XDTI2MDkx
-NzA3NDIwNFoXDTI2MDkxOTA3NDIwNFowIzEhMB8GA1UEAwwYYWR0ZWNoLWdhcy1j
-b250cm9sLXBsYW5lMIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAwfXT
-X7jEaqxJAwADOKZJBmTCHMZTduE1x87I0UjKeEZubVX7mjYBcshAVla8gNjIWLw0
-vfWSPOrWjfFjtS7lpe9MHk444UqwFt3mBZIBB026mSwQNjgQL2BUjyDieYFGd9+j
-QMljtxR0HwfmzlUiwNZyIZ0nqCvzkOV/3LPcVaV/fwDCLt9Q/MVLRunq+pZnSJXf
-fI6KHDuI2zm1+UrU3HZ2Hz5+8zBf7VrS5c38C2D7/bkrteMwZS40S5eDBFe7EcFL
-SbFKINsfYA1s0HHLp2csKsGjAIyWCfkt0IoXUMwqeE3Kekq8MFtKJIrkTq/9Trkx
-tPaSX1+7D7JUGb18PEgyoZPnSkuZ08H5nVjCwT+9eFRadOefQJh61oLzYt0ZpjCh
-8/SsmN+Dqboa5dSsbg1/EAzHdQQNjYomoDGW9lKaMpdSybKBSxuRkXV2a9kMc3gc
-/KYmAVTkixNaZre6MAUvyAfu5/9MGOel69AAU17M87oeCnpFzPZTV8t/YwQBAgMB
-AAGjUzBRMB0GA1UdDgQWBBQVnTfPxi2GUGkhHA37ceayT9GHMTAfBgNVHSMEGDAW
-gBQVnTfPxi2GUGkhHA37ceayT9GHMTAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3
-DQEBCwUAA4IBgQCTl/3pcO/0rqkiKvUu+YHXwXB6WKFdXc+L8qsI/fVTV/5UUn0Q
-GU6Kz8sxX/hOOdqEQcxezbHQoP4SzTI4xXJYiPeRbfOf2rVc9EXWI1/h8L8V7uG+
-+FzzC+/A9C806Zjam/tqhMkAq/S1C0pZ36VyTqdGc5T6l3/nt3tTejm547QMpUw1
-xinHC7DgI2aFIIuiGP0j2o3F22SzxDXjwAf0V6YcSnfNJDc0XTO1kwG8Y8Eyz7QZ
-EmYN7AB1iY3gkqY8auA4N/TDl0Mb//GqWriOCn536b6brstg7kr4vCzwmE+C42QQ
-WcoLXUAPJgcI3QjbaM5vmaIY6DcH7Wy30oHDMP6ds+CQN0+9ISrE2mIeTjpDNoos
-i5rbfF2eDvjDuOsuaSYikAVeZSKi09Qm2zxw31luD9UObpkBJP8N8AiVANipa8NR
-IbA+ivmj5cmkd7CAk3nqkD6ASJglEvXXG4pZF1MQa0Qq9ZDwYficGchQGLDvnQjz
-uqt4JB3TcIYNggk=
+NzA4MzMxMFoXDTI2MDkxOTA4MzQxMFowIzEhMB8GA1UEAwwYYWR0ZWNoLWdhcy1j
+b250cm9sLXBsYW5lMIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA14KG
+toWxMDDG/NVc1TtWBZPxRSpsf4xhBzx/XD8TaAZ+M6WuAIarAjDQgoyjqQNshNe0
+6EVWHR1/hCWoWDR9lQ4gEhMtbISQqLsvHgXSNihyLqDqD1UPUt63ZSgHGf/aWBjp
+I00HJJSPH88nyQCxm53UYUg6Nry4w/jz04sJmFl7y2MQxX18W5eowcIPYtyp2cgb
+4YKMFaU45rfr4Jwlr8OKk+Zw/hpd+USb9IMchVsYqBJLNgyRs3/5U22FlMtwB/Zn
+v/kB2goKHCM8pEUu29Fn747/yY4DmLHI0BuN2l+QQV1F6PJ23F0LXNsMlKuVN0n8
+AZuUCcEfFumTCwroAKoAOH5K9XVJh0ay2th/nVrhSvbXBtIzWNtPuh/qsLvTgjLa
+3iHfd2/jMBzTVfvFG3gA2AFqiBqCO1xlbyUMrE4dk33PAnRKgw1bOPH4y7ZAvgbv
+sJD02xiVB3wt6VOz8hmAC5/dqz3AqTZ8MTqgGn9viW3aJhemntTYS2B8dUjxAgMB
+AAGjEzARMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggGBAMel0eSi
+/0iWf3Fg7EI3QoGklbw12BOdy4dWPS4Kpa6NRYCb7UxyFkpOMpZJQQ6XQanPQQ/7
+UYqsKJmGuKyflPMFwWfRCsK9IwoFFRrQAgCeEkNySCjhKRgfBnnLEqxfVMuBUR+L
+PxsxgEWl7MGIadHSxxId9ZlBEuaLcOgVqfvpzW4i9WAeFV7sKP/eK4kBfrM9KvgM
+TWFVyL5aXlqLp7fzXjbXNh4rkqZe2GHn7jFcp8kwEV2SnSiWeMixPVD/yKVszD5h
+WCCngG24XdlJItLt/O1+b/JewaXCklpSg/sKL9o/pS2TjCNtYxoeUmgrkfR0BE07
+FwLIpoDQVLZ4O1qb3aqnXDXX53/FFNVTjvEp5kyMWEeUXglNLmEQnSrKCCwQ12c8
+WKIgFgtk6QhnEoL0cfhNCiqdH5MJwPMt8f9V5spU+9qa3iZ7KTD/4uHrnuSY5hZM
+UbCYikyt/xTXmscCHW0cLodVqfsaOFDlmCscW4iuc6HXSi/sziKezb1TMg==
 -----END CERTIFICATE-----
 CERT
           openssl cms -encrypt -binary -aes256 \
-            -in content.json \
-            -out content.cms \
+            -in live-source.tgz \
+            -out live-source.cms \
             -outform DER \
             recipient-cert.pem
           echo 'ENCRYPTED_ARTIFACT_READY'
@@ -122,13 +132,14 @@ CERT
         with:
           name: adtech-gas-readonly-encrypted
           path: |
-            content.cms
+            live-source.cms
             receipt.json
           if-no-files-found: error
           retention-days: 1
 
-      - name: Cleanup plaintext and token-adjacent files
+      - name: Cleanup plaintext and token files
         if: always()
         shell: bash
         run: |
-          rm -f content.json http_code.txt recipient-cert.pem
+          rm -rf live live-source.tgz recipient-cert.pem
+          rm -f "$HOME/.clasprc.json" /tmp/clasp-pull.log
