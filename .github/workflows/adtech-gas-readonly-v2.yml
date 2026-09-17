@@ -1,0 +1,147 @@
+name: AdTech GAS Readonly V2
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/adtech-gas-readonly-v2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  get-content:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+      ADTECH_GAS_SCRIPT_ID: ${{ secrets.ADTECH_GAS_SCRIPT_ID }}
+      CLASP_OAUTH_CLIENT_ID: '1072944905499-vm2v2i5dvn0a0d2o4ca36i1vge8cvbn0.apps.googleusercontent.com'
+    steps:
+      - name: Validate secret presence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GOOGLE_REFRESH_TOKEN:-}" || { echo 'MISSING_GOOGLE_REFRESH_TOKEN'; exit 1; }
+          test -n "${ADTECH_GAS_SCRIPT_ID:-}" || { echo 'MISSING_ADTECH_GAS_SCRIPT_ID'; exit 1; }
+          echo "::add-mask::${GOOGLE_REFRESH_TOKEN}"
+          echo "::add-mask::${ADTECH_GAS_SCRIPT_ID}"
+          echo 'CREDENTIAL_PRESENCE_PASS'
+
+      - name: Exchange existing refresh token
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl --silent --show-error --output token.json --write-out '%{http_code}' \
+            --request POST \
+            --data-urlencode "client_id=${CLASP_OAUTH_CLIENT_ID}" \
+            --data-urlencode "refresh_token=${GOOGLE_REFRESH_TOKEN}" \
+            --data-urlencode 'grant_type=refresh_token' \
+            'https://oauth2.googleapis.com/token')"
+          if [ "$code" != '200' ]; then
+            echo "TOKEN_EXCHANGE_HTTP_${code}"
+            rm -f token.json
+            exit 1
+          fi
+          access_token="$(python3 - <<'PY'
+          import json
+          with open('token.json', encoding='utf-8') as f:
+              print(json.load(f).get('access_token',''))
+          PY
+          )"
+          test -n "$access_token" || { echo 'ACCESS_TOKEN_MISSING'; rm -f token.json; exit 1; }
+          echo "::add-mask::${access_token}"
+          printf 'GOOGLE_ACCESS_TOKEN=%s\n' "$access_token" >> "$GITHUB_ENV"
+          rm -f token.json
+          echo 'TOKEN_EXCHANGE_PASS'
+
+      - name: Read Production Apps Script content
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl --silent --show-error --output content.json --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${GOOGLE_ACCESS_TOKEN}" \
+            "https://script.googleapis.com/v1/projects/${ADTECH_GAS_SCRIPT_ID}/content")"
+          if [ "$code" != '200' ]; then
+            echo "GET_CONTENT_HTTP_${code}"
+            rm -f content.json
+            exit 1
+          fi
+          echo 'GET_CONTENT_HTTP_200'
+
+      - name: Build source-free receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          data = json.loads(Path('content.json').read_text(encoding='utf-8'))
+          files = data.get('files') or []
+          normalized = []
+          total = 0
+          manifest_present = False
+          for f in files:
+              name = str(f.get('name',''))
+              typ = str(f.get('type',''))
+              src = str(f.get('source',''))
+              if name == 'appsscript' and typ == 'JSON': manifest_present = True
+              b = src.encode('utf-8')
+              total += len(b)
+              normalized.append({'name_sha256':hashlib.sha256(name.encode()).hexdigest(),'type':typ,'source_sha256':hashlib.sha256(b).hexdigest(),'source_bytes':len(b)})
+          normalized.sort(key=lambda x:(x['name_sha256'],x['type']))
+          aggregate = hashlib.sha256(json.dumps(normalized,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          receipt = {'state':'PASS_READONLY_GETCONTENT' if manifest_present else 'FAIL_MANIFEST_MISSING','file_count':len(files),'manifest_present':manifest_present,'total_source_bytes':total,'aggregate_fingerprint':aggregate,'source_exposed':False,'mutation_count':0}
+          Path('receipt.json').write_text(json.dumps(receipt,sort_keys=True,separators=(',',':'))+'\n',encoding='utf-8')
+          print(Path('receipt.json').read_text(encoding='utf-8'),end='')
+          if not manifest_present: raise SystemExit(1)
+          PY
+
+      - name: Encrypt live source for AI inspection
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > recipient-cert.pem <<'CERT'
+-----BEGIN CERTIFICATE-----
+MIIEHTCCAoWgAwIBAgIUeG4NRykeOeQX77sY5haSFg08FZMwDQYJKoZIhvcNAQEL
+BQAwHjEcMBoGA1UEAwwTYWR0ZWNoLWdhcy1yZWFkb25seTAeFw0yNjA5MTcwODQ5
+MzRaFw0yNjA5MTkwODQ5MzRaMB4xHDAaBgNVBAMME2FkdGVjaC1nYXMtcmVhZG9u
+bHkwggGiMA0GCSqGSIb3DQEBAQUAA4IBjwAwggGKAoIBgQDDHyq6qUdhODOyhxJq
+DiinbZjRyXR78cG+KmG34M/HMvGG7D74Qf0FNmaD/OBfDaO+eCz04D+oXMfA0du7
+QVTzWTgGrBYVmmfXvO2RIIjfmyqI19W1qJoZOoapZRFuUVSFLGh7qFBUR9cvDhXp
+T2ffVdoOflWW+1zi6KYFnRx5vayrl3kjgFj4IMfIdtEYOu5M5ayTtm8j4NCQW9Dz
+Z996U0AabZIUp7JeCqXZKdrKy0aCp4xkke1xMOAAmcpqqVfeRGRlRgykswKVRso0
+mA1ZBd00njHQVDPz5eFpxmDLJMjw10io8xHnPY4HFY8GgM6o48m56G9yiB+xN0xB
++av9USbcyroKXV9iK7hBlNj5cEXhFmlVwfKBqebMvoMRDsTSkbicfFMhqH4nh/eb
+B/PVP0p8cAKL891pxAbDSpdgF7qZDFOAO2Rw/npNRH08GCIESgWJHW/LN4nba5A+
+3++I1FxcY6izFiyx8331Tic5IlLvRpBujGWOqSFRWpQsCDcCAwEAAaNTMFEwHQYD
+VR0OBBYEFErFWIasWsQMzudvpTnzscaniCEyMB8GA1UdIwQYMBaAFErFWIasWsQM
+zudvpTnzscaniCEyMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggGB
+AElVKA6qw42y3VbbSOssg+RxdS1bcE8mK54hoROhYK2zQhnglzr6/gfqTaL3b/Ay
+lMKY6SMJwF3uGDzOroZhaPdd3X2RqsHxTl8OTr8Li/qvLbdqh37B0k2V9uhmQ5ah
+meyMS2ha0wI1E4xvdT5szeCKhyKCUB4T934bkI9126JKe1141xIEarmhiC4ZRe/D
+42HnFgJceHpbaT7Wfsy9vveVQ850EevZHR8/yQxkbmQEsr1jTyZNcY0Vx9r7SOSJ
+E+wxjng/aob3F9AO4CI7STZk25WpBST5+gsIMLDaeQIZJ/KZH0iLPq3d2gXP3X4Q
+4SBmkUU8iHrxeMp4LWYGQUHhNmLhMN9PEIJXce5UlOfWBSoh7OyoGzgxol94lwOE
+hA8tdgpOIpTIWnqW9L+LyZEMmCPPUhmSWPl/NqJPRjcNUeht7HsbN5oELFwkZJIO
+2UmzJ31H24+19hey0CNfjPXckJkPKOgVG9vm3GpWttFJVwP1sllDGNIfAilCpE+F
+iA==
+-----END CERTIFICATE-----
+CERT
+          openssl cms -encrypt -binary -aes256 -in content.json -out content.cms -outform DER recipient-cert.pem
+          echo 'ENCRYPTED_ARTIFACT_READY'
+
+      - name: Upload encrypted evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: adtech-gas-readonly-v2
+          path: |
+            content.cms
+            receipt.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Cleanup plaintext
+        if: always()
+        shell: bash
+        run: rm -f content.json content.cms receipt.json recipient-cert.pem token.json
