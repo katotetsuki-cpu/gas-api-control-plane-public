@@ -1,0 +1,63 @@
+name: AdTech Existing Refresh Reprobe V5
+
+on:
+  push:
+    paths:
+      - '.github/workflows/adtech-existing-refresh-reprobe-v5.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  reprobe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+      ADTECH_GAS_SCRIPT_ID: ${{ secrets.ADTECH_GAS_SCRIPT_ID }}
+      CLASP_OAUTH_CLIENT_ID: '1072944905499-vm2v2i5dvn0a0d2o4ca36i1vge8cvbn0.apps.googleusercontent.com'
+      CLASP_OAUTH_CLIENT_SECRET: 'v6V3fKV_zWU7iw1DrpO1rknX'
+    steps:
+      - name: Gate 1 - existing refresh token exchange
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GOOGLE_REFRESH_TOKEN:-}" || { echo 'MISSING_GOOGLE_REFRESH_TOKEN'; exit 1; }
+          echo "::add-mask::${GOOGLE_REFRESH_TOKEN}"
+          code="$(curl -sS -o token.json -w '%{http_code}' -X POST \
+            --data-urlencode "client_id=${CLASP_OAUTH_CLIENT_ID}" \
+            --data-urlencode "client_secret=${CLASP_OAUTH_CLIENT_SECRET}" \
+            --data-urlencode "refresh_token=${GOOGLE_REFRESH_TOKEN}" \
+            --data-urlencode 'grant_type=refresh_token' \
+            'https://oauth2.googleapis.com/token')"
+          echo "TOKEN_EXCHANGE_HTTP_${code}"
+          if [ "$code" != '200' ]; then
+            echo "OAUTH_ERROR=$(jq -r '.error // "none"' token.json)"
+            echo "OAUTH_ERROR_DESCRIPTION=$(jq -r '.error_description // "none"' token.json)"
+            rm -f token.json
+            exit 1
+          fi
+          at="$(jq -r '.access_token // empty' token.json)"
+          test -n "$at" || { echo 'ACCESS_TOKEN_MISSING'; rm -f token.json; exit 1; }
+          echo "::add-mask::${at}"
+          printf 'GOOGLE_ACCESS_TOKEN=%s\n' "$at" >> "$GITHUB_ENV"
+          rm -f token.json
+          echo 'TOKEN_EXCHANGE_PASS'
+
+      - name: Gate 2 - Apps Script getContent
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o content.json -w '%{http_code}' \
+            --header "Authorization: Bearer ${GOOGLE_ACCESS_TOKEN}" \
+            "https://script.googleapis.com/v1/projects/${ADTECH_GAS_SCRIPT_ID}/content")"
+          echo "GET_CONTENT_HTTP_${code}"
+          if [ "$code" != '200' ]; then
+            echo "GAS_API_STATUS=$(jq -r '.error.status // "none"' content.json)"
+            echo "GAS_API_MESSAGE=$(jq -r '.error.message // "none"' content.json)"
+            rm -f content.json
+            exit 1
+          fi
+          python3 tools/gas_receipt_v4.py content.json
+          rm -f content.json
+          echo 'EXISTING_REFRESH_REPROBE_PASS'
