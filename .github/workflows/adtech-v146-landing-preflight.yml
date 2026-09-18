@@ -1,0 +1,50 @@
+name: AdTech v1.46 Landing Preflight
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'control/adtech-v146-preflight.trigger'
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ADTECH_BUNDLE_KEY_B64: ${{ secrets.ADTECH_BUNDLE_KEY_B64 }}
+      GOOGLE_ACCESS_TOKEN_ONESHOT: ${{ secrets.GOOGLE_ACCESS_TOKEN_ONESHOT }}
+      ADTECH_GAS_SCRIPT_ID: ${{ secrets.ADTECH_GAS_SCRIPT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Secret presence
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in ADTECH_BUNDLE_KEY_B64 GOOGLE_ACCESS_TOKEN_ONESHOT ADTECH_GAS_SCRIPT_ID; do
+            val="${!v:-}"; test -n "$val" || { echo "MISSING_${v}"; exit 1; }; echo "::add-mask::${val}"
+          done
+          echo SECRET_PRESENCE_PASS
+      - name: Read current Production Apps Script
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o content.json -w '%{http_code}' --header "Authorization: Bearer ${GOOGLE_ACCESS_TOKEN_ONESHOT}" "https://script.googleapis.com/v1/projects/${ADTECH_GAS_SCRIPT_ID}/content")"
+          echo "GET_CONTENT_HTTP_${code}"
+          if [ "$code" != 200 ]; then
+            echo "GAS_API_STATUS=$(jq -r '.error.status // "none"' content.json)"
+            echo "GAS_API_MESSAGE=$(jq -r '.error.message // "none"' content.json)"
+            rm -f content.json; exit 1
+          fi
+      - name: Decrypt and reproduce exact landing without write
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/adtech_v146_decrypt_preflight.py payload/adtech-v146-landing.enc.json content.json bundle.json update.json
+          echo PRODUCTION_MUTATION_COUNT=0
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f content.json bundle.json update.json
