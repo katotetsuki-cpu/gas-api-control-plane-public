@@ -1,0 +1,122 @@
+name: AdTech Google Reauth Readonly V1
+
+on:
+  push:
+    paths:
+      - '.github/workflows/adtech-google-reauth-readonly-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  reauth-read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+      GOOGLE_REAUTH_REDIRECT_URL: ${{ secrets.GOOGLE_REAUTH_REDIRECT_URL }}
+      ADTECH_GAS_SCRIPT_ID: ${{ secrets.ADTECH_GAS_SCRIPT_ID }}
+      CLASP_OAUTH_CLIENT_ID: '1072944905499-vm2v2i5dvn0a0d2o4ca36i1vge8cvbn0.apps.googleusercontent.com'
+      CLASP_OAUTH_CLIENT_SECRET: 'v6V3fKV_zWU7iw1DrpO1rknX'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Parse reauthorization redirect
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in GOOGLE_REFRESH_TOKEN GOOGLE_REAUTH_REDIRECT_URL ADTECH_GAS_SCRIPT_ID; do
+            val="${!v:-}"
+            test -n "$val" || { echo "MISSING_${v}"; exit 1; }
+            echo "::add-mask::${val}"
+          done
+          python3 - <<'PY'
+          import base64, hashlib, hmac, os, urllib.parse
+          u = urllib.parse.urlparse(os.environ["GOOGLE_REAUTH_REDIRECT_URL"])
+          q = urllib.parse.parse_qs(u.query)
+          code = (q.get("code") or [""])[0]
+          state = (q.get("state") or [""])[0]
+          refresh = os.environ["GOOGLE_REFRESH_TOKEN"].encode()
+          script_id = os.environ["ADTECH_GAS_SCRIPT_ID"].encode()
+          def b64u(b):
+              return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+          expected_state = b64u(hmac.new(refresh, b"spf-adtech-reauth-state-v1|" + script_id, hashlib.sha256).digest())
+          verifier = b64u(hashlib.sha256(b"spf-adtech-reauth-verifier-v1|" + refresh + b"|" + script_id).digest())
+          if not code:
+              raise SystemExit("REAUTH_CODE_MISSING")
+          if state != expected_state:
+              raise SystemExit("REAUTH_STATE_MISMATCH")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write("GOOGLE_REAUTH_CODE=" + code + "\n")
+              f.write("GOOGLE_REAUTH_CODE_VERIFIER=" + verifier + "\n")
+          print("REAUTH_REDIRECT_PARSE_PASS")
+          PY
+
+      - name: Exchange authorization code
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${GOOGLE_REAUTH_CODE}"
+          echo "::add-mask::${GOOGLE_REAUTH_CODE_VERIFIER}"
+          code="$(curl -sS -o token.json -w '%{http_code}' -X POST \
+            --data-urlencode "client_id=${CLASP_OAUTH_CLIENT_ID}" \
+            --data-urlencode "client_secret=${CLASP_OAUTH_CLIENT_SECRET}" \
+            --data-urlencode "code=${GOOGLE_REAUTH_CODE}" \
+            --data-urlencode "code_verifier=${GOOGLE_REAUTH_CODE_VERIFIER}" \
+            --data-urlencode 'redirect_uri=http://localhost:8888' \
+            --data-urlencode 'grant_type=authorization_code' \
+            'https://oauth2.googleapis.com/token')"
+          echo "AUTH_CODE_EXCHANGE_HTTP_${code}"
+          if [ "$code" != '200' ]; then
+            echo "OAUTH_ERROR=$(jq -r '.error // "none"' token.json)"
+            echo "OAUTH_ERROR_DESCRIPTION=$(jq -r '.error_description // "none"' token.json)"
+            rm -f token.json
+            exit 1
+          fi
+          at="$(jq -r '.access_token // empty' token.json)"
+          test -n "$at" || { echo 'ACCESS_TOKEN_MISSING'; rm -f token.json; exit 1; }
+          echo "::add-mask::${at}"
+          printf 'GOOGLE_ACCESS_TOKEN=%s\n' "$at" >> "$GITHUB_ENV"
+          rm -f token.json
+          echo 'AUTH_CODE_EXCHANGE_PASS'
+
+      - name: Assert Apps Script scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sS -o tokeninfo.json "https://oauth2.googleapis.com/tokeninfo?access_token=${GOOGLE_ACCESS_TOKEN}"
+          scope="$(jq -r '.scope // ""' tokeninfo.json)"
+          rm -f tokeninfo.json
+          case " ${scope} " in
+            *" https://www.googleapis.com/auth/script.projects "*) echo 'SCOPE_SCRIPT_PROJECTS_PASS' ;;
+            *) echo 'SCOPE_SCRIPT_PROJECTS_FAIL'; exit 1 ;;
+          esac
+
+      - name: Read Production Apps Script content
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o content.json -w '%{http_code}' \
+            --header "Authorization: Bearer ${GOOGLE_ACCESS_TOKEN}" \
+            "https://script.googleapis.com/v1/projects/${ADTECH_GAS_SCRIPT_ID}/content")"
+          echo "GET_CONTENT_HTTP_${code}"
+          if [ "$code" != '200' ]; then
+            echo "GAS_API_STATUS=$(jq -r '.error.status // "none"' content.json)"
+            echo "GAS_API_MESSAGE=$(jq -r '.error.message // "none"' content.json)"
+            rm -f content.json
+            exit 1
+          fi
+          echo 'GET_CONTENT_HTTP_200'
+
+      - name: Emit source-free receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/gas_receipt_v4.py content.json
+          echo 'SOURCE_FREE_RECEIPT_PASS'
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f token.json tokeninfo.json content.json
