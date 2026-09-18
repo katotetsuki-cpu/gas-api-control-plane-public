@@ -1,0 +1,50 @@
+name: AdTech Landing Preflight Reauth URL V2
+
+on:
+  push:
+    paths:
+      - '.github/workflows/adtech-landing-preflight-reauth-url-v2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+      ADTECH_GAS_SCRIPT_ID: ${{ secrets.ADTECH_GAS_SCRIPT_ID }}
+      CLASP_OAUTH_CLIENT_ID: '1072944905499-vm2v2i5dvn0a0d2o4ca36i1vge8cvbn0.apps.googleusercontent.com'
+    steps:
+      - name: Generate preflight browser authorization URL
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GOOGLE_REFRESH_TOKEN:-}" || { echo 'MISSING_GOOGLE_REFRESH_TOKEN'; exit 1; }
+          test -n "${ADTECH_GAS_SCRIPT_ID:-}" || { echo 'MISSING_ADTECH_GAS_SCRIPT_ID'; exit 1; }
+          echo "::add-mask::${GOOGLE_REFRESH_TOKEN}"
+          python3 - <<'PY'
+          import base64, hashlib, hmac, os, urllib.parse
+          refresh = os.environ["GOOGLE_REFRESH_TOKEN"].encode()
+          script_id = os.environ["ADTECH_GAS_SCRIPT_ID"].encode()
+          client_id = os.environ["CLASP_OAUTH_CLIENT_ID"]
+          def b64u(b):
+              return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+          verifier = b64u(hashlib.sha256(b"spf-adtech-landing-preflight-verifier-v2|" + refresh + b"|" + script_id).digest())
+          challenge = b64u(hashlib.sha256(verifier.encode()).digest())
+          state = b64u(hmac.new(refresh, b"spf-adtech-landing-preflight-state-v2|" + script_id, hashlib.sha256).digest())
+          params = {
+              "client_id": client_id,
+              "redirect_uri": "http://localhost:8888",
+              "response_type": "code",
+              "scope": "https://www.googleapis.com/auth/script.projects https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/userinfo.email",
+              "access_type": "offline",
+              "prompt": "consent",
+              "code_challenge": challenge,
+              "code_challenge_method": "S256",
+              "state": state,
+          }
+          print("AUTHORIZATION_URL=" + "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params))
+          print("PREFLIGHT_AUTH_URL_GENERATION_PASS")
+          PY
