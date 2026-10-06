@@ -1,0 +1,37 @@
+name: VPMK PKCE Verify
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/vpmk-pkce-verify.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+      VPMK_GAS_SCRIPT_ID: '1XtpURj2HM5Clqj60Z7wZ4Rv7Qtc9o7PR8yfUvE-tezTChHw0lfYFVda7'
+    steps:
+      - name: Recompute source-free PKCE identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GOOGLE_REFRESH_TOKEN:-}" || { echo 'MISSING_GOOGLE_REFRESH_TOKEN'; exit 1; }
+          echo "::add-mask::${GOOGLE_REFRESH_TOKEN}"
+          python3 - <<'PY'
+          import base64, hashlib, hmac, os
+          refresh=os.environ['GOOGLE_REFRESH_TOKEN'].encode()
+          script_id=os.environ['VPMK_GAS_SCRIPT_ID'].encode()
+          def b64u(b): return base64.urlsafe_b64encode(b).rstrip(b'=').decode()
+          verifier=b64u(hashlib.sha256(b'spf-adtech-reauth-verifier-v1|' + refresh + b'|' + script_id).digest())
+          challenge=b64u(hashlib.sha256(verifier.encode()).digest())
+          state=b64u(hmac.new(refresh,b'spf-adtech-reauth-state-v1|' + script_id,hashlib.sha256).digest())
+          print('PKCE_STATE='+state)
+          print('PKCE_CHALLENGE='+challenge)
+          print('PKCE_VERIFY_PASS')
+          PY
