@@ -1,4 +1,4 @@
-name: Bank Ads Bootstrap Pin Rebase 20261008
+name: AdTech GAS Readonly V2
 
 on:
   workflow_dispatch:
@@ -10,96 +10,138 @@ permissions:
   contents: read
 
 jobs:
-  rebase:
+  get-content:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
-      BANKADS_GAS_SCRIPT_ID: '17ZNQ5alw0-fubjjQ2vi3DnuH67P9jrCHc40xYaoldVezDcIaY0Qkgpk9'
+      ADTECH_GAS_SCRIPT_ID: ${{ secrets.ADTECH_GAS_SCRIPT_ID }}
       CLASP_OAUTH_CLIENT_ID: '1072944905499-vm2v2i5dvn0a0d2o4ca36i1vge8cvbn0.apps.googleusercontent.com'
-      OLD_OUTER_SHA: '838bbf903c3de2d7ee982f2b0b66237d917c2911bc1ea94100a0e48ea0068391'
-      NEW_OUTER_SHA: '3ea51a050b2657c2f0fb9022ee122d41dd37948711dbc21d63a8154e05d0513f'
     steps:
+      - name: Validate secret presence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GOOGLE_REFRESH_TOKEN:-}" || { echo 'MISSING_GOOGLE_REFRESH_TOKEN'; exit 1; }
+          test -n "${ADTECH_GAS_SCRIPT_ID:-}" || { echo 'MISSING_ADTECH_GAS_SCRIPT_ID'; exit 1; }
+          echo "::add-mask::${GOOGLE_REFRESH_TOKEN}"
+          echo "::add-mask::${ADTECH_GAS_SCRIPT_ID}"
+          echo 'CREDENTIAL_PRESENCE_PASS'
+
       - name: Exchange existing refresh token
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${GOOGLE_REFRESH_TOKEN:-}" || { echo MISSING_GOOGLE_REFRESH_TOKEN; exit 1; }
-          echo "::add-mask::${GOOGLE_REFRESH_TOKEN}"
-          code="$(curl --silent --show-error --output token.json --write-out '%{http_code}'             --request POST             --data-urlencode "client_id=${CLASP_OAUTH_CLIENT_ID}"             --data-urlencode "refresh_token=${GOOGLE_REFRESH_TOKEN}"             --data-urlencode 'grant_type=refresh_token'             'https://oauth2.googleapis.com/token')"
-          test "$code" = 200 || { echo "TOKEN_EXCHANGE_HTTP_$code"; exit 1; }
+          code="$(curl --silent --show-error --output token.json --write-out '%{http_code}' \
+            --request POST \
+            --data-urlencode "client_id=${CLASP_OAUTH_CLIENT_ID}" \
+            --data-urlencode "refresh_token=${GOOGLE_REFRESH_TOKEN}" \
+            --data-urlencode 'grant_type=refresh_token' \
+            'https://oauth2.googleapis.com/token')"
+          if [ "$code" != '200' ]; then
+            echo "TOKEN_EXCHANGE_HTTP_${code}"
+            rm -f token.json
+            exit 1
+          fi
           access_token="$(python3 - <<'PY'
-import json
-print(json.load(open('token.json')).get('access_token',''))
-PY
-)"
-          test -n "$access_token"
-          echo "::add-mask::$access_token"
-          echo "GOOGLE_ACCESS_TOKEN=$access_token" >> "$GITHUB_ENV"
+          import json
+          with open('token.json', encoding='utf-8') as f:
+              print(json.load(f).get('access_token',''))
+          PY
+          )"
+          test -n "$access_token" || { echo 'ACCESS_TOKEN_MISSING'; rm -f token.json; exit 1; }
+          echo "::add-mask::${access_token}"
+          printf 'GOOGLE_ACCESS_TOKEN=%s\n' "$access_token" >> "$GITHUB_ENV"
           rm -f token.json
+          echo 'TOKEN_EXCHANGE_PASS'
 
-      - name: Read and validate current Production Apps Script
+      - name: Read Production Apps Script content
         shell: bash
         run: |
           set -euo pipefail
-          code="$(curl --silent --show-error --output before.json --write-out '%{http_code}'             --header "Authorization: Bearer ${GOOGLE_ACCESS_TOKEN}"             "https://script.googleapis.com/v1/projects/${BANKADS_GAS_SCRIPT_ID}/content")"
-          test "$code" = 200 || { echo "GET_CONTENT_HTTP_$code"; exit 1; }
-          python3 - <<'PY'
-import json,os
-p=json.load(open('before.json'))
-old=os.environ['OLD_OUTER_SHA']; new=os.environ['NEW_OUTER_SHA']
-hits=[]
-for i,f in enumerate(p.get('files') or []):
-    s=str(f.get('source',''))
-    if 'BOOT_SOURCE_OUTER_SHA_MISMATCH' in s:
-        hits.append((i,f.get('name'),s.count(old),s.count(new)))
-assert len(hits)==1, hits
-i,name,oldc,newc=hits[0]
-assert oldc==1 and newc==0, hits
-print('PIN_PREFLIGHT_PASS',name)
-PY
+          code="$(curl --silent --show-error --output content.json --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${GOOGLE_ACCESS_TOKEN}" \
+            "https://script.googleapis.com/v1/projects/${ADTECH_GAS_SCRIPT_ID}/content")"
+          if [ "$code" != '200' ]; then
+            echo "GET_CONTENT_HTTP_${code}"
+            rm -f content.json
+            exit 1
+          fi
+          echo 'GET_CONTENT_HTTP_200'
 
-      - name: Rebase only the Bootstrap outer SHA pin
+      - name: Build source-free receipt
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-import json,os
-p=json.load(open('before.json'))
-old=os.environ['OLD_OUTER_SHA']; new=os.environ['NEW_OUTER_SHA']
-changed=0
-for f in p.get('files') or []:
-    s=str(f.get('source',''))
-    if 'BOOT_SOURCE_OUTER_SHA_MISMATCH' in s:
-        assert s.count(old)==1
-        f['source']=s.replace(old,new,1)
-        changed+=1
-assert changed==1
-json.dump({'files':p['files']},open('after.json','w'),ensure_ascii=False,separators=(',',':'))
-PY
-          code="$(curl --silent --show-error --output update-response.json --write-out '%{http_code}'             --request PUT             --header "Authorization: Bearer ${GOOGLE_ACCESS_TOKEN}"             --header 'Content-Type: application/json'             --data-binary @after.json             "https://script.googleapis.com/v1/projects/${BANKADS_GAS_SCRIPT_ID}/content")"
-          test "$code" = 200 || { echo "UPDATE_CONTENT_HTTP_$code"; cat update-response.json; exit 1; }
+          import hashlib, json
+          from pathlib import Path
+          data = json.loads(Path('content.json').read_text(encoding='utf-8'))
+          files = data.get('files') or []
+          normalized = []
+          total = 0
+          manifest_present = False
+          for f in files:
+              name = str(f.get('name',''))
+              typ = str(f.get('type',''))
+              src = str(f.get('source',''))
+              if name == 'appsscript' and typ == 'JSON': manifest_present = True
+              b = src.encode('utf-8')
+              total += len(b)
+              normalized.append({'name_sha256':hashlib.sha256(name.encode()).hexdigest(),'type':typ,'source_sha256':hashlib.sha256(b).hexdigest(),'source_bytes':len(b)})
+          normalized.sort(key=lambda x:(x['name_sha256'],x['type']))
+          aggregate = hashlib.sha256(json.dumps(normalized,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          receipt = {'state':'PASS_READONLY_GETCONTENT' if manifest_present else 'FAIL_MANIFEST_MISSING','file_count':len(files),'manifest_present':manifest_present,'total_source_bytes':total,'aggregate_fingerprint':aggregate,'source_exposed':False,'mutation_count':0}
+          Path('receipt.json').write_text(json.dumps(receipt,sort_keys=True,separators=(',',':'))+'\n',encoding='utf-8')
+          print(Path('receipt.json').read_text(encoding='utf-8'),end='')
+          if not manifest_present: raise SystemExit(1)
+          PY
 
-      - name: Readback exact pin
+      - name: Encrypt live source for AI inspection
         shell: bash
         run: |
           set -euo pipefail
-          code="$(curl --silent --show-error --output readback.json --write-out '%{http_code}'             --header "Authorization: Bearer ${GOOGLE_ACCESS_TOKEN}"             "https://script.googleapis.com/v1/projects/${BANKADS_GAS_SCRIPT_ID}/content")"
-          test "$code" = 200 || { echo "READBACK_HTTP_$code"; exit 1; }
-          python3 - <<'PY'
-import json,os
-p=json.load(open('readback.json'))
-old=os.environ['OLD_OUTER_SHA']; new=os.environ['NEW_OUTER_SHA']
-hits=[]
-for f in p.get('files') or []:
-    s=str(f.get('source',''))
-    if 'BOOT_SOURCE_OUTER_SHA_MISMATCH' in s:
-        hits.append((f.get('name'),s.count(old),s.count(new)))
-assert len(hits)==1 and hits[0][1]==0 and hits[0][2]==1, hits
-print('BANKADS_BOOTSTRAP_PIN_REBASE_READBACK_PASS',hits[0][0])
-PY
+          cat > recipient-cert.pem <<'CERT'
+-----BEGIN CERTIFICATE-----
+MIIEHTCCAoWgAwIBAgIUeG4NRykeOeQX77sY5haSFg08FZMwDQYJKoZIhvcNAQEL
+BQAwHjEcMBoGA1UEAwwTYWR0ZWNoLWdhcy1yZWFkb25seTAeFw0yNjA5MTcwODQ5
+MzRaFw0yNjA5MTkwODQ5MzRaMB4xHDAaBgNVBAMME2FkdGVjaC1nYXMtcmVhZG9u
+bHkwggGiMA0GCSqGSIb3DQEBAQUAA4IBjwAwggGKAoIBgQDDHyq6qUdhODOyhxJq
+DiinbZjRyXR78cG+KmG34M/HMvGG7D74Qf0FNmaD/OBfDaO+eCz04D+oXMfA0du7
+QVTzWTgGrBYVmmfXvO2RIIjfmyqI19W1qJoZOoapZRFuUVSFLGh7qFBUR9cvDhXp
+T2ffVdoOflWW+1zi6KYFnRx5vayrl3kjgFj4IMfIdtEYOu5M5ayTtm8j4NCQW9Dz
+Z996U0AabZIUp7JeCqXZKdrKy0aCp4xkke1xMOAAmcpqqVfeRGRlRgykswKVRso0
+mA1ZBd00njHQVDPz5eFpxmDLJMjw10io8xHnPY4HFY8GgM6o48m56G9yiB+xN0xB
++av9USbcyroKXV9iK7hBlNj5cEXhFmlVwfKBqebMvoMRDsTSkbicfFMhqH4nh/eb
+B/PVP0p8cAKL891pxAbDSpdgF7qZDFOAO2Rw/npNRH08GCIESgWJHW/LN4nba5A+
+3++I1FxcY6izFiyx8331Tic5IlLvRpBujGWOqSFRWpQsCDcCAwEAAaNTMFEwHQYD
+VR0OBBYEFErFWIasWsQMzudvpTnzscaniCEyMB8GA1UdIwQYMBaAFErFWIasWsQM
+zudvpTnzscaniCEyMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggGB
+AElVKA6qw42y3VbbSOssg+RxdS1bcE8mK54hoROhYK2zQhnglzr6/gfqTaL3b/Ay
+lMKY6SMJwF3uGDzOroZhaPdd3X2RqsHxTl8OTr8Li/qvLbdqh37B0k2V9uhmQ5ah
+meyMS2ha0wI1E4xvdT5szeCKhyKCUB4T934bkI9126JKe1141xIEarmhiC4ZRe/D
+42HnFgJceHpbaT7Wfsy9vveVQ850EevZHR8/yQxkbmQEsr1jTyZNcY0Vx9r7SOSJ
+E+wxjng/aob3F9AO4CI7STZk25WpBST5+gsIMLDaeQIZJ/KZH0iLPq3d2gXP3X4Q
+4SBmkUU8iHrxeMp4LWYGQUHhNmLhMN9PEIJXce5UlOfWBSoh7OyoGzgxol94lwOE
+hA8tdgpOIpTIWnqW9L+LyZEMmCPPUhmSWPl/NqJPRjcNUeht7HsbN5oELFwkZJIO
+2UmzJ31H24+19hey0CNfjPXckJkPKOgVG9vm3GpWttFJVwP1sllDGNIfAilCpE+F
+iA==
+-----END CERTIFICATE-----
+CERT
+          openssl cms -encrypt -binary -aes256 -in content.json -out content.cms -outform DER recipient-cert.pem
+          echo 'ENCRYPTED_ARTIFACT_READY'
 
-      - name: Cleanup
+      - name: Upload encrypted evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: adtech-gas-readonly-v2
+          path: |
+            content.cms
+            receipt.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Cleanup plaintext
         if: always()
         shell: bash
-        run: rm -f before.json after.json readback.json update-response.json token.json
+        run: rm -f content.json content.cms receipt.json recipient-cert.pem token.json
