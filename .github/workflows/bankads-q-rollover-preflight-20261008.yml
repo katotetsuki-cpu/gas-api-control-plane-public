@@ -1,0 +1,78 @@
+name: Bank Ads Q Rollover Preflight 20261008
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bankads-q-rollover-preflight-20261008.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+      CLASP_OAUTH_CLIENT_ID: '1072944905499-vm2v2i5dvn0a0e48ea0068391.apps.googleusercontent.com'
+      BANKADS_RUNTIME_FILE_ID: '18RyiqGGw0rR60Sed_bCf5dVts9m_gxrG'
+      BANKADS_GAS_SCRIPT_ID: '17ZNQ5alw0-fubjjQ2vi3DnuH67P9jrCHc40xYaoldVezDcIaY0Qkgpk9'
+      EXPECTED_OUTER_SHA: '3ea51a050b2657c2f0fb9022ee122d41dd37948711dbc21d63a8154e05d0513f'
+      EXPECTED_MAIN_SHA: '5c81a98907cb80dd633306b05ad6fc7b22a4c4459f438cc3670c083bad4941a9'
+    steps:
+      - name: Exchange existing refresh token
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GOOGLE_REFRESH_TOKEN:-}" || { echo MISSING_GOOGLE_REFRESH_TOKEN; exit 1; }
+          echo "::add-mask::${GOOGLE_REFRESH_TOKEN}"
+          code="$(curl --silent --show-error --output token.json --write-out '%{http_code}'             --request POST             --data-urlencode "client_id=${CLASP_OAUTH_CLIENT_ID}"             --data-urlencode "refresh_token=${GOOGLE_REFRESH_TOKEN}"             --data-urlencode 'grant_type=refresh_token'             'https://oauth2.googleapis.com/token')"
+          test "$code" = 200 || { echo "TOKEN_EXCHANGE_HTTP_$code"; exit 1; }
+          access_token="$(python3 - <<'PY'
+import json
+print(json.load(open('token.json')).get('access_token',''))
+PY
+)"
+          test -n "$access_token"
+          echo "::add-mask::$access_token"
+          echo "GOOGLE_ACCESS_TOKEN=$access_token" >> "$GITHUB_ENV"
+
+      - name: Verify Drive runtime read capability and identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl --silent --show-error --output runtime.json --write-out '%{http_code}'             --header "Authorization: Bearer ${GOOGLE_ACCESS_TOKEN}"             "https://www.googleapis.com/drive/v3/files/${BANKADS_RUNTIME_FILE_ID}?alt=media")"
+          test "$code" = 200 || { echo "DRIVE_RUNTIME_GET_HTTP_$code"; exit 1; }
+          python3 - <<'PY'
+import json,base64,hashlib,os
+raw=open('runtime.json','rb').read()
+outer=hashlib.sha256(raw).hexdigest()
+assert outer==os.environ['EXPECTED_OUTER_SHA'], (outer,os.environ['EXPECTED_OUTER_SHA'])
+p=json.loads(raw)
+f=[x for x in p['files'] if x['name']=='BankAds_ZeroCost_FiveMinute_Runtime_Candidate_v2_0.gs']
+assert len(f)==1
+main=base64.b64decode(f[0]['base64'])
+sha=hashlib.sha256(main).hexdigest()
+assert sha==os.environ['EXPECTED_MAIN_SHA'], (sha,os.environ['EXPECTED_MAIN_SHA'])
+print('DRIVE_RUNTIME_PREFLIGHT_PASS',outer,sha)
+PY
+
+      - name: Verify Apps Script read capability and bootstrap binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl --silent --show-error --output script.json --write-out '%{http_code}'             --header "Authorization: Bearer ${GOOGLE_ACCESS_TOKEN}"             "https://script.googleapis.com/v1/projects/${BANKADS_GAS_SCRIPT_ID}/content")"
+          test "$code" = 200 || { echo "APPS_SCRIPT_GET_HTTP_$code"; exit 1; }
+          python3 - <<'PY'
+import json,os
+p=json.load(open('script.json'))
+needle=os.environ['EXPECTED_OUTER_SHA']
+hits=[f.get('name') for f in p.get('files',[]) if needle in str(f.get('source','')) and 'BOOT_SOURCE_OUTER_SHA_MISMATCH' in str(f.get('source',''))]
+assert len(hits)==1,hits
+print('APPS_SCRIPT_BOOTSTRAP_BINDING_PASS',hits[0])
+PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f token.json runtime.json script.json
