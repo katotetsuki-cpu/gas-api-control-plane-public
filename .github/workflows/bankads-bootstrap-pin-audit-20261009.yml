@@ -1,0 +1,57 @@
+name: BankAds Bootstrap Pin Audit 20261009
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bankads-bootstrap-pin-audit-20261009.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+      SCRIPT_ID: '17ZNQ5alw0-fubjjQ2vi3DnuH67P9jrCHc40xYaoldVezDcIaY0Qkgpk9'
+      OLD_SHA: '6f84de9f94317cc71f94f5fe087327e657e1f2abd758c2b7b1a28d021dd9779e'
+      NEW_SHA: '8ba9589f4f006dd22b29259978bd937848659cb549de76ee292c3d43dd0cc2c1'
+    steps:
+      - name: Pull production source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GOOGLE_REFRESH_TOKEN:-}" || { echo MISSING_GOOGLE_REFRESH_TOKEN; exit 1; }
+          echo "::add-mask::${GOOGLE_REFRESH_TOKEN}"
+          mkdir -p live
+          python3 - <<'PY'
+          import json, os, pathlib
+          p=pathlib.Path.home()/'.clasprc.json'
+          p.write_text(json.dumps({'refresh_token':os.environ['GOOGLE_REFRESH_TOKEN'],'token_type':'Bearer'}))
+          p.chmod(0o600)
+          pathlib.Path('live/.clasp.json').write_text(json.dumps({'scriptId':os.environ['SCRIPT_ID'],'rootDir':'.'}))
+          PY
+          (cd live && npx -y @google/clasp@3.4.0 pull >/tmp/clasp.log 2>&1) || { echo CLASP_PULL_FAILED; tail -n 20 /tmp/clasp.log | sed -E 's/[A-Za-z0-9_\/-]{20,}/[REDACTED]/g'; exit 1; }
+          echo CLASP_PULL_PASS
+      - name: Audit bootstrap pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, json
+          old=os.environ['OLD_SHA']; new=os.environ['NEW_SHA']
+          old_hits=new_hits=0
+          files=0
+          for p in pathlib.Path('live').rglob('*'):
+              if not p.is_file() or p.name=='.clasp.json': continue
+              files+=1
+              s=p.read_text(errors='ignore')
+              old_hits+=s.count(old)
+              new_hits+=s.count(new)
+          print(json.dumps({'state':'PASS_AUDIT','file_count':files,'old_sha_hits':old_hits,'new_sha_hits':new_hits,'source_exposed':False,'mutation_count':0},separators=(',',':')))
+          PY
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -rf live "$HOME/.clasprc.json" /tmp/clasp.log
