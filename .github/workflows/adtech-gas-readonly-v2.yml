@@ -127,7 +127,7 @@ jobs:
           2UmzJ31H24+19hey0CNfjPXckJkPKOgVG9vm3GpWttFJVwP1sllDGNIfAilCpE+F
           iA==
           -----END CERTIFICATE-----
-CERT
+          CERT
           openssl cms -encrypt -binary -aes256 -in content.json -out content.cms -outform DER recipient-cert.pem
           echo 'ENCRYPTED_ARTIFACT_READY'
 
