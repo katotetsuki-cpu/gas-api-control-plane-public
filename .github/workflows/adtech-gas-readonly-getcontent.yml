@@ -96,30 +96,30 @@ jobs:
           set -euo pipefail
           tar --exclude='.clasp.json' -C live -czf live-source.tgz .
           cat > recipient-cert.pem <<'CERT'
------BEGIN CERTIFICATE-----
-MIID5zCCAk+gAwIBAgIUPKsR666kicg0+veJ/tR8EFjNjNcwDQYJKoZIhvcNAQEL
-BQAwIzEhMB8GA1UEAwwYYWR0ZWNoLWdhcy1jb250cm9sLXBsYW5lMB4XDTI2MDkx
-NzA4MzMxMFoXDTI2MDkxOTA4MzQxMFowIzEhMB8GA1UEAwwYYWR0ZWNoLWdhcy1j
-b250cm9sLXBsYW5lMIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA14KG
-toWxMDDG/NVc1TtWBZPxRSpsf4xhBzx/XD8TaAZ+M6WuAIarAjDQgoyjqQNshNe0
-6EVWHR1/hCWoWDR9lQ4gEhMtbISQqLsvHgXSNihyLqDqD1UPUt63ZSgHGf/aWBjp
-I00HJJSPH88nyQCxm53UYUg6Nry4w/jz04sJmFl7y2MQxX18W5eowcIPYtyp2cgb
-4YKMFaU45rfr4Jwlr8OKk+Zw/hpd+USb9IMchVsYqBJLNgyRs3/5U22FlMtwB/Zn
-v/kB2goKHCM8pEUu29Fn747/yY4DmLHI0BuN2l+QQV1F6PJ23F0LXNsMlKuVN0n8
-AZuUCcEfFumTCwroAKoAOH5K9XVJh0ay2th/nVrhSvbXBtIzWNtPuh/qsLvTgjLa
-3iHfd2/jMBzTVfvFG3gA2AFqiBqCO1xlbyUMrE4dk33PAnRKgw1bOPH4y7ZAvgbv
-sJD02xiVB3wt6VOz8hmAC5/dqz3AqTZ8MTqgGn9viW3aJhemntTYS2B8dUjxAgMB
-AAGjEzARMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggGBAMel0eSi
-/0iWf3Fg7EI3QoGklbw12BOdy4dWPS4Kpa6NRYCb7UxyFkpOMpZJQQ6XQanPQQ/7
-UYqsKJmGuKyflPMFwWfRCsK9IwoFFRrQAgCeEkNySCjhKRgfBnnLEqxfVMuBUR+L
-PxsxgEWl7MGIadHSxxId9ZlBEuaLcOgVqfvpzW4i9WAeFV7sKP/eK4kBfrM9KvgM
-TWFVyL5aXlqLp7fzXjbXNh4rkqZe2GHn7jFcp8kwEV2SnSiWeMixPVD/yKVszD5h
-WCCngG24XdlJItLt/O1+b/JewaXCklpSg/sKL9o/pS2TjCNtYxoeUmgrkfR0BE07
-FwLIpoDQVLZ4O1qb3aqnXDXX53/FFNVTjvEp5kyMWEeUXglNLmEQnSrKCCwQ12c8
-WKIgFgtk6QhnEoL0cfhNCiqdH5MJwPMt8f9V5spU+9qa3iZ7KTD/4uHrnuSY5hZM
-UbCYikyt/xTXmscCHW0cLodVqfsaOFDlmCscW4iuc6HXSi/sziKezb1TMg==
------END CERTIFICATE-----
-CERT
+          -----BEGIN CERTIFICATE-----
+          MIID5zCCAk+gAwIBAgIUPKsR666kicg0+veJ/tR8EFjNjNcwDQYJKoZIhvcNAQEL
+          BQAwIzEhMB8GA1UEAwwYYWR0ZWNoLWdhcy1jb250cm9sLXBsYW5lMB4XDTI2MDkx
+          NzA4MzMxMFoXDTI2MDkxOTA4MzQxMFowIzEhMB8GA1UEAwwYYWR0ZWNoLWdhcy1j
+          b250cm9sLXBsYW5lMIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA14KG
+          toWxMDDG/NVc1TtWBZPxRSpsf4xhBzx/XD8TaAZ+M6WuAIarAjDQgoyjqQNshNe0
+          6EVWHR1/hCWoWDR9lQ4gEhMtbISQqLsvHgXSNihyLqDqD1UPUt63ZSgHGf/aWBjp
+          I00HJJSPH88nyQCxm53UYUg6Nry4w/jz04sJmFl7y2MQxX18W5eowcIPYtyp2cgb
+          4YKMFaU45rfr4Jwlr8OKk+Zw/hpd+USb9IMchVsYqBJLNgyRs3/5U22FlMtwB/Zn
+          v/kB2goKHCM8pEUu29Fn747/yY4DmLHI0BuN2l+QQV1F6PJ23F0LXNsMlKuVN0n8
+          AZuUCcEfFumTCwroAKoAOH5K9XVJh0ay2th/nVrhSvbXBtIzWNtPuh/qsLvTgjLa
+          3iHfd2/jMBzTVfvFG3gA2AFqiBqCO1xlbyUMrE4dk33PAnRKgw1bOPH4y7ZAvgbv
+          sJD02xiVB3wt6VOz8hmAC5/dqz3AqTZ8MTqgGn9viW3aJhemntTYS2B8dUjxAgMB
+          AAGjEzARMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggGBAMel0eSi
+          /0iWf3Fg7EI3QoGklbw12BOdy4dWPS4Kpa6NRYCb7UxyFkpOMpZJQQ6XQanPQQ/7
+          UYqsKJmGuKyflPMFwWfRCsK9IwoFFRrQAgCeEkNySCjhKRgfBnnLEqxfVMuBUR+L
+          PxsxgEWl7MGIadHSxxId9ZlBEuaLcOgVqfvpzW4i9WAeFV7sKP/eK4kBfrM9KvgM
+          TWFVyL5aXlqLp7fzXjbXNh4rkqZe2GHn7jFcp8kwEV2SnSiWeMixPVD/yKVszD5h
+          WCCngG24XdlJItLt/O1+b/JewaXCklpSg/sKL9o/pS2TjCNtYxoeUmgrkfR0BE07
+          FwLIpoDQVLZ4O1qb3aqnXDXX53/FFNVTjvEp5kyMWEeUXglNLmEQnSrKCCwQ12c8
+          WKIgFgtk6QhnEoL0cfhNCiqdH5MJwPMt8f9V5spU+9qa3iZ7KTD/4uHrnuSY5hZM
+          UbCYikyt/xTXmscCHW0cLodVqfsaOFDlmCscW4iuc6HXSi/sziKezb1TMg==
+          -----END CERTIFICATE-----
+          CERT
           openssl cms -encrypt -binary -aes256 \
             -in live-source.tgz \
             -out live-source.cms \
