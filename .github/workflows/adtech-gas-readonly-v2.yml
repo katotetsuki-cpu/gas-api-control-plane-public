@@ -40,6 +40,16 @@ jobs:
             'https://oauth2.googleapis.com/token')"
           if [ "$code" != '200' ]; then
             echo "TOKEN_EXCHANGE_HTTP_${code}"
+            python3 - <<'PY'
+            import json
+            try:
+                with open("token.json",encoding="utf-8") as fh: data=json.load(fh)
+                code=str(data.get("error","unknown"))
+                allowed={"invalid_grant","invalid_client","unauthorized_client","invalid_request","unsupported_grant_type"}
+                print("OAUTH_ERROR_CLASS="+(code if code in allowed else "OTHER"))
+            except Exception:
+                print("OAUTH_ERROR_CLASS=UNREADABLE")
+            PY
             rm -f token.json
             exit 1
           fi
